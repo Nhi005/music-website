@@ -1,250 +1,140 @@
 <?php
-// BẬT HIỂN THỊ LỖI
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+require_once '../includes/config.php'; //
+if(!isAdmin()) { redirect('../login.php'); } //
 
-// NHÚNG CONFIG
-if (file_exists('config.php')) {
-    require_once 'config.php';
-} elseif (file_exists('includes/config.php')) {
-    require_once 'includes/config.php'; 
-} else {
-    die("Lỗi: Không tìm thấy file config.php!");
+$page_title = "Quản lý nghệ sĩ";
+$db = getDB(); //
+
+// Xử lý tìm kiếm nghệ sĩ
+$search = $_GET['search'] ?? '';
+$sql = "SELECT a.*, 
+               COUNT(s.id) as total_songs, 
+               IFNULL(SUM(s.play_count), 0) as total_plays
+        FROM artists a
+        LEFT JOIN songs s ON a.id = s.artist_id"; // Join để lấy thống kê
+
+if ($search) {
+    $sql .= " WHERE a.name LIKE :search OR a.country LIKE :search";
 }
+$sql .= " GROUP BY a.id ORDER BY a.name ASC";
 
-$db = getDB();
-$page_title = "Tất cả nghệ sĩ";
+$stmt = $db->prepare($sql);
+if ($search) { $stmt->execute(['search' => "%$search%"]); } 
+else { $stmt->execute(); }
+$artists = $stmt->fetchAll();
 
-// --- CẤU HÌNH PHÂN TRANG ---
-$limit = 12; // Số nghệ sĩ hiển thị trên 1 trang (bạn có thể sửa số này: 12, 18, 24...)
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-if ($page < 1) $page = 1;
-$offset = ($page - 1) * $limit;
-
-// --- XỬ LÝ DATABASE ---
-try {
-    // 1. Đếm tổng số nghệ sĩ để biết cần bao nhiêu trang
-    $count_stmt = $db->query("SELECT COUNT(*) FROM artists");
-    $total_records = $count_stmt->fetchColumn();
-    $total_pages = ceil($total_records / $limit);
-
-    // 2. Lấy danh sách nghệ sĩ cho trang hiện tại
-    // Sử dụng LIMIT và OFFSET
-    $stmt = $db->prepare("SELECT * FROM artists ORDER BY name ASC LIMIT :limit OFFSET :offset");
-    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-    $stmt->execute();
-    $artists = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-} catch(Exception $e) {
-    $artists = [];
-    $total_pages = 0;
-}
-
-require_once 'includes/header.php'; 
+require_once 'includes/header.php'; // Đảm bảo header này chứa admin-wrapper
 ?>
 
-<style>
-    .page-header {
-        padding: 40px 0 20px 0;
-        margin-bottom: 20px;
-    }
-    
-    .page-title {
-        color: white;
-        font-size: 32px;
-        font-weight: 800;
-        margin-bottom: 10px;
-    }
-
-    /* GRID LAYOUT */
-    .artists-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-        gap: 24px;
-        padding-bottom: 40px; 
-    }
-
-    .artist-card {
-        background: #181818;
-        padding: 20px;
-        border-radius: 8px;
-        transition: background-color 0.3s ease;
-        text-decoration: none;
-        color: white;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        position: relative;
-    }
-
-    .artist-card:hover {
-        background: #282828;
-    }
-
-    .artist-img-wrapper {
-        width: 140px;
-        height: 140px;
-        margin-bottom: 16px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        border-radius: 50%;
-        overflow: hidden;
-    }
-
-    .artist-img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        border-radius: 50%;
-        transition: transform 0.3s;
-    }
-
-    .artist-card:hover .artist-img {
-        transform: scale(1.05);
-    }
-
-    .artist-info h3 {
-        font-weight: 700;
-        font-size: 16px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 100%;
-        margin: 0 0 4px 0;
-    }
-
-    .artist-info p {
-        color: #b3b3b3;
-        font-size: 14px;
-        margin: 0;
-    }
-
-
-    /* CSS CHO PHÂN TRANG (PAGINATION) */
-    .pagination-container {
-        display: flex;
-        justify-content: center;
-        margin-top: 20px;
-        margin-bottom: 120px; /* Cách footer một khoảng lớn */
-    }
-
-    .pagination {
-        display: flex;
-        list-style: none;
-        padding: 0;
-        gap: 8px;
-    }
-
-    .pagination a {
-        color: white;
-        text-decoration: none;
-        width: 40px;
-        height: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        background-color: #121212;
-        border: 1px solid #282828;
-        font-weight: 600;
-        transition: all 0.2s;
-    }
-
-    .pagination a:hover {
-        background-color: #282828;
-        border-color: #fff;
-    }
-
-    .pagination a.active {
-        background-color: #1db954;
-        color: white;
-        border-color: #1db954;
-    }
-    
-    .pagination a.disabled {
-        opacity: 0.5;
-        pointer-events: none;
-        cursor: default;
-    }
-
-    @media (max-width: 768px) {
-        .artists-grid {
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            gap: 16px;
-        }
-        .artist-img-wrapper {
-            width: 100px;
-            height: 100px;
-        }
-    }
-</style>
-
-<div class="container" style="padding-top: 80px;">
-    <div class="page-header">
-        <h1 class="page-title">Tất cả Nghệ sĩ</h1>
-        <p style="color: #b3b3b3;">
-            Hiện có <?php echo $total_records; ?> nghệ sĩ trên hệ thống
-        </p>
+<div class="admin-content-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+    <h2 class="page-title">Danh sách nghệ sĩ</h2>
+    <div class="header-actions" style="display: flex; gap: 15px;">
+        <button class="btn-filter active" onclick="openModal('add')" style="background: var(--admin-primary); color: white; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;">
+            <i class="fas fa-plus"></i> Thêm nghệ sĩ mới
+        </button>
+        <form action="" method="GET" class="search-bar">
+            <i class="fas fa-search"></i>
+            <input type="text" name="search" placeholder="Tìm tên hoặc quốc gia..." value="<?php echo htmlspecialchars($search); ?>">
+        </form>
     </div>
-
-    <?php if(empty($artists)): ?>
-        <div class="text-center" style="color: #b3b3b3; padding: 40px 0;">
-            <p>Chưa có nghệ sĩ nào (hoặc trang này không tồn tại).</p>
-        </div>
-    <?php else: ?>
-        <div class="artists-grid">
-            <?php foreach($artists as $artist): ?>
-                <a href="artist.php?id=<?php echo $artist['id']; ?>" class="artist-card">
-                    <div class="artist-img-wrapper">
-                        <img src="<?php 
-                            echo !empty($artist['avatar']) 
-                                ? SITE_URL . $artist['avatar'] 
-                                : SITE_URL . '/assets/images/default-artist.jpg';
-                        ?>" alt="<?php echo htmlspecialchars($artist['name']); ?>" class="artist-img">
-                    </div>
-                    
-                 
-                    <div class="artist-info">
-                        <h3><?php echo htmlspecialchars($artist['name']); ?></h3>
-                        <p>Nghệ sĩ</p>
-                    </div>
-                </a>
-            <?php endforeach; ?>
-        </div>
-
-        <?php if ($total_pages > 1): ?>
-        <div class="pagination-container">
-            <div class="pagination">
-                <?php if ($page > 1): ?>
-                    <a href="?page=<?php echo $page - 1; ?>"><i class="fas fa-chevron-left"></i></a>
-                <?php else: ?>
-                    <a class="disabled"><i class="fas fa-chevron-left"></i></a>
-                <?php endif; ?>
-
-                <?php
-                // Logic hiển thị thông minh: chỉ hiện trang xung quanh trang hiện tại
-                $range = 2; // Số trang hiển thị 2 bên
-                for ($i = 1; $i <= $total_pages; $i++) {
-                    if ($i == 1 || $i == $total_pages || ($i >= $page - $range && $i <= $page + $range)) {
-                        echo '<a href="?page=' . $i . '" class="' . ($i == $page ? 'active' : '') . '">' . $i . '</a>';
-                    } elseif ($i == $page - $range - 1 || $i == $page + $range + 1) {
-                        echo '<a class="disabled">...</a>';
-                    }
-                }
-                ?>
-
-                <?php if ($page < $total_pages): ?>
-                    <a href="?page=<?php echo $page + 1; ?>"><i class="fas fa-chevron-right"></i></a>
-                <?php else: ?>
-                    <a class="disabled"><i class="fas fa-chevron-right"></i></a>
-                <?php endif; ?>
-            </div>
-        </div>
-        <?php endif; ?>
-
-    <?php endif; ?>
 </div>
+
+<div class="chart-card"> <div class="card-body" style="padding: 0;">
+        <table class="admin-table" style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="text-align: left; background: var(--admin-sidebar); color: var(--admin-text-muted);">
+                    <th style="padding: 15px;">Ảnh đại diện</th>
+                    <th style="padding: 15px;">Tên nghệ sĩ</th>
+                    <th style="padding: 15px;">Quốc gia</th>
+                    <th style="padding: 15px;">Số bài hát</th>
+                    <th style="padding: 15px;">Tổng lượt nghe</th>
+                    <th style="padding: 15px;">Thao tác</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach($artists as $artist): ?>
+                <tr class="top-item" style="border-bottom: 1px solid var(--admin-border);">
+                    <td style="padding: 15px;">
+                        <img src="<?php echo SITE_URL . ($artist['avatar'] ?: '/assets/images/default-artist.jpg'); ?>" 
+                             style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">
+                    </td>
+                    <td style="padding: 15px;">
+                        <strong><?php echo htmlspecialchars($artist['name']); ?></strong>
+                        <p style="font-size: 12px; color: var(--admin-text-muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            <?php echo htmlspecialchars($artist['bio']); ?>
+                        </p>
+                    </td>
+                    <td style="padding: 15px;"><?php echo htmlspecialchars($artist['country']); ?></td>
+                    <td style="padding: 15px; text-align: center;"><?php echo $artist['total_songs']; ?></td>
+                    <td style="padding: 15px;"><?php echo number_format($artist['total_plays']); ?></td>
+                    <td style="padding: 15px;">
+                        <button onclick='openEditModal(<?php echo json_encode($artist); ?>)' class="btn-notification" title="Sửa">
+                            <i class="fas fa-edit" style="color: #3498db;"></i>
+                        </button>
+                        <button onclick="deleteArtist(<?php echo $artist['id']; ?>)" class="btn-notification" title="Xóa">
+                            <i class="fas fa-trash" style="color: #e74c3c;"></i>
+                        </button>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="artistModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.8);">
+    <div style="background: var(--admin-card); margin: 5% auto; padding: 30px; width: 500px; border-radius: 12px; border: 1px solid var(--admin-border);">
+        <h2 id="modalTitle">Thêm nghệ sĩ</h2>
+        <form action="process_artist.php" method="POST" enctype="multipart/form-data">
+            <input type="hidden" name="action" id="formAction" value="add">
+            <input type="hidden" name="artist_id" id="artistId">
+
+            <div style="margin-bottom: 15px;">
+                <label>Tên nghệ sĩ *</label>
+                <input type="text" name="name" id="name" required style="width:100%; padding:8px; background:var(--admin-hover); border:1px solid var(--admin-border); color:white;">
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+                <label>Quốc gia</label>
+                <input type="text" name="country" id="country" style="width:100%; padding:8px; background:var(--admin-hover); color:white;">
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <label>Tiểu sử (Bio)</label>
+                <textarea name="bio" id="bio" rows="3" style="width:100%; padding:8px; background:var(--admin-hover); color:white;"></textarea>
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <label>Ảnh đại diện (Upload mới)</label>
+                <input type="file" name="avatar" accept="image/*" style="width:100%;">
+            </div>
+
+            <div style="display:flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" onclick="closeModal()" class="btn-filter">Hủy</button>
+                <button type="submit" class="btn-filter active">Lưu nghệ sĩ</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openModal(mode) {
+    document.getElementById('artistModal').style.display = 'block';
+    document.getElementById('formAction').value = mode;
+    document.getElementById('modalTitle').innerText = mode === 'add' ? 'Thêm nghệ sĩ mới' : 'Sửa thông tin nghệ sĩ';
+}
+
+function openEditModal(artist) {
+    openModal('edit');
+    document.getElementById('artistId').value = artist.id;
+    document.getElementById('name').value = artist.name;
+    document.getElementById('country').value = artist.country;
+    document.getElementById('bio').value = artist.bio;
+}
+
+function closeModal() {
+    document.getElementById('artistModal').style.display = 'none';
+}
+</script>
 
 <?php require_once 'includes/footer.php'; ?>

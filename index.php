@@ -1,294 +1,376 @@
 <?php
-$page_title = "Trang chủ";
-require_once 'includes/header.php';
+require_once '../includes/config.php';
 
-// Lấy dữ liệu từ database
+// Kiểm tra quyền admin
+if(!isAdmin()) {
+    redirect('../login.php');
+}
+
+$page_title = "Dashboard";
 $db = getDB();
-$liked_songs = [];
-if (isset($_SESSION['user_id'])) {
-    try {
-        $u_id = $_SESSION['user_id'];
-        $stmt = $db->query("SELECT song_id FROM favorites WHERE user_id = $u_id");
-        $liked_songs = $stmt->fetchAll(PDO::FETCH_COLUMN); // Kết quả sẽ là mảng: [1, 5, 9...]
-    } catch(Exception $e) { }
-}
 
+// Lấy thống kê tổng quan
+$stats = [
+    'total_plays' => $db->query("SELECT SUM(play_count) as total FROM songs")->fetch()['total'] ?? 0,
+    'total_users' => $db->query("SELECT COUNT(*) as total FROM users")->fetch()['total'] ?? 0,
+    'total_songs' => $db->query("SELECT COUNT(*) as total FROM songs")->fetch()['total'] ?? 0,
+    'total_artists' => $db->query("SELECT COUNT(*) as total FROM artists")->fetch()['total'] ?? 0,
+];
 
+// Lượt nghe tuần trước
+$last_week_plays = $db->query("
+    SELECT COUNT(*) as total
+    FROM listening_history
+    WHERE listened_at >= DATE_SUB(NOW(), INTERVAL 2 WEEK)
+    AND listened_at < DATE_SUB(NOW(), INTERVAL 1 WEEK)
+")->fetch()['total'] ?? 1;
 
-// Bài hát trending
-try {
-    $trending_songs = $db->query("SELECT s.*, a.name as artist_name 
-                                   FROM songs s 
-                                   LEFT JOIN artists a ON s.artist_id = a.id 
-                                   ORDER BY s.play_count DESC 
-                                   LIMIT 6")->fetchAll(PDO::FETCH_ASSOC);
-} catch(Exception $e) {
-    $trending_songs = [];
-}
+$current_week_plays = $db->query("
+    SELECT COUNT(*) as total
+    FROM listening_history
+    WHERE listened_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
+")->fetch()['total'] ?? 0;
 
-// Phát hành mới
-try {
-    $new_releases = $db->query("SELECT s.*, a.name as artist_name 
-                                FROM songs s 
-                                LEFT JOIN artists a ON s.artist_id = a.id 
-                                ORDER BY s.created_at DESC 
-                                LIMIT 12")->fetchAll(PDO::FETCH_ASSOC);
-} catch(Exception $e) {
-    $new_releases = [];
-}
+$plays_change = $last_week_plays > 0 ? round((($current_week_plays - $last_week_plays) / $last_week_plays) * 100) : 0;
 
-// Nghệ sĩ nổi bật
-try {
-    $popular_artists = $db->query("SELECT * FROM artists ORDER BY RAND() LIMIT 6")->fetchAll(PDO::FETCH_ASSOC);
-} catch(Exception $e) {
-    $popular_artists = [];
-}
+// Người dùng tháng trước
+$last_month_users = $db->query("
+    SELECT COUNT(*) as total
+    FROM users
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 2 MONTH)
+    AND created_at < DATE_SUB(NOW(), INTERVAL 1 MONTH)
+")->fetch()['total'] ?? 1;
 
-//Album
-try {
-    $latest_albums = $db->query("SELECT al.*, a.name as artist_name 
-                                 FROM albums al 
-                                 LEFT JOIN artists a ON al.artist_id = a.id 
-                                 ORDER BY al.created_at DESC 
-                                 LIMIT 6")->fetchAll(PDO::FETCH_ASSOC);
-} catch(Exception $e) {
-    $latest_albums = [];
-}
+$current_month_users = $db->query("
+    SELECT COUNT(*) as total
+    FROM users
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+")->fetch()['total'] ?? 0;
 
+$users_change = $last_month_users > 0 ? round((($current_month_users - $last_month_users) / $last_month_users) * 100) : 0;
 
+// Lượt nghe theo ngày (7 ngày gần nhất)
+$plays_by_day = $db->query("
+    SELECT DATE(listened_at) as date, COUNT(*) as plays
+    FROM listening_history
+    WHERE listened_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    GROUP BY DATE(listened_at)
+    ORDER BY date ASC
+")->fetchAll(PDO::FETCH_ASSOC);
 
+// Top 10 bài hát
+$top_songs = $db->query("
+    SELECT s.title, a.name as artist_name, s.play_count
+    FROM songs s
+    LEFT JOIN artists a ON s.artist_id = a.id
+    ORDER BY s.play_count DESC
+    LIMIT 10
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// Top nghệ sĩ
+$top_artists = $db->query("
+    SELECT a.name, a.avatar, COUNT(DISTINCT f.id) as fans
+    FROM artists a
+    LEFT JOIN songs s ON a.id = s.artist_id
+    LEFT JOIN favorites f ON s.id = f.song_id
+    GROUP BY a.id
+    ORDER BY fans DESC
+    LIMIT 5
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// Người dùng mới theo tuần
+$new_users = $db->query("
+    SELECT DATE(created_at) as date, COUNT(*) as users
+    FROM users
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 4 WEEK)
+    GROUP BY WEEK(created_at)
+    ORDER BY date ASC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// Hoạt động gần đây
+$recent_activities = $db->query("
+    (SELECT 'song' as type, s.title as name, s.created_at as time
+     FROM songs s
+     ORDER BY s.created_at DESC
+     LIMIT 5)
+    
+    UNION ALL
+    
+    (SELECT 'user' as type, u.username as name, u.created_at as time
+     FROM users u
+     ORDER BY u.created_at DESC
+     LIMIT 5)
+    
+    ORDER BY time DESC
+    LIMIT 10
+")->fetchAll(PDO::FETCH_ASSOC);
+
+require_once 'includes/header.php';
 ?>
 
+<div class="dashboard-grid">
+    <!-- Stat Cards -->
+    <div class="stat-card card-plays">
+        <div class="stat-icon">
+            <i class="fas fa-play-circle"></i>
+        </div>
+        <div class="stat-info">
+            <h3>Tổng lượt nghe</h3>
+            <p class="stat-number"><?php echo number_format($stats['total_plays']); ?></p>
+            <span class="stat-change <?php echo $plays_change >= 0 ? 'positive' : 'negative'; ?>">
+                <i class="fas fa-arrow-<?php echo $plays_change >= 0 ? 'up' : 'down'; ?>"></i> 
+                <?php echo abs($plays_change); ?>% từ tuần trước
+            </span>
+        </div>
+    </div>
 
-<!-- Hero Section -->
-<section class="hero-section">
-    <div class="container">
-        <div class="hero-content">
-            <h1>Âm nhạc là <span class="highlight">cuộc sống</span></h1>
-            <p>Khám phá hàng triệu bài hát từ các nghệ sĩ yêu thích của bạn</p>
-            <?php if(!isLoggedIn()): ?>
-            <div class="hero-buttons">
-                <a href="register.php" class="btn btn-primary btn-large">Bắt đầu ngay - Miễn phí</a>
-                <a href="search.php" class="btn btn-outline btn-large">Khám phá ngay</a>
+    <div class="stat-card card-users">
+        <div class="stat-icon">
+            <i class="fas fa-users"></i>
+        </div>
+        <div class="stat-info">
+            <h3>Người dùng</h3>
+            <p class="stat-number"><?php echo number_format($stats['total_users']); ?></p>
+            <span class="stat-change <?php echo $users_change >= 0 ? 'positive' : 'negative'; ?>">
+                <i class="fas fa-arrow-<?php echo $users_change >= 0 ? 'up' : 'down'; ?>"></i> 
+                <?php echo abs($users_change); ?>% từ tháng trước
+            </span>
+        </div>
+    </div>
+
+    <div class="stat-card card-songs">
+        <div class="stat-icon">
+            <i class="fas fa-music"></i>
+        </div>
+        <div class="stat-info">
+            <h3>Bài hát</h3>
+            <p class="stat-number"><?php echo number_format($stats['total_songs']); ?></p>
+            <span class="stat-change neutral">
+                <i class="fas fa-minus"></i> Tổng số bài hát
+            </span>
+        </div>
+    </div>
+
+    <div class="stat-card card-artists">
+        <div class="stat-icon">
+            <i class="fas fa-microphone"></i>
+        </div>
+        <div class="stat-info">
+            <h3>Nghệ sĩ</h3>
+            <p class="stat-number"><?php echo number_format($stats['total_artists']); ?></p>
+            <span class="stat-change positive">
+                <i class="fas fa-arrow-up"></i> Tổng số nghệ sĩ
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Section -->
+<div class="charts-grid">
+    <div class="chart-card">
+        <div class="card-header">
+            <h3><i class="fas fa-chart-line"></i> Lượt nghe theo ngày</h3>
+            <div class="filter-buttons">
+                <button class="btn-filter active" data-period="day">Ngày</button>
+                <button class="btn-filter" data-period="week">Tuần</button>
+                <button class="btn-filter" data-period="month">Tháng</button>
             </div>
-            <?php endif; ?>
+        </div>
+        <div class="card-body">
+            <canvas id="playsChart"></canvas>
         </div>
     </div>
-</section>
 
-<!-- Trending Songs -->
-<section class="section">
-    <div class="container">
-        <div class="section-header">
-            <h2><i class="fas fa-fire"></i> Trending</h2>
-            <a href="search.php?filter=trending" class="see-all">Xem tất cả <i class="fas fa-arrow-right"></i></a>
+    <div class="chart-card">
+        <div class="card-header">
+            <h3><i class="fas fa-user-plus"></i> Người dùng mới</h3>
         </div>
-        
-        <div class="songs-grid">
-            <?php if(empty($trending_songs)): ?>
-                <p class="text-muted">Chưa có bài hát nào. Vui lòng thêm dữ liệu vào database.</p>
-            <?php else: ?>
-                <?php foreach($trending_songs as $song): ?>
-                <div class="song-card" data-song-id="<?php echo $song['id']; ?>">
-
-                    <div class="song-image">
-                        <img src="<?php 
-                            echo !empty($song['image_url']) 
-                                ? BASE_URL . $song['image_url'] 
-                                : BASE_URL . '/assets/images/default-cover.jpg';
-                        ?>" 
-                        alt="<?php echo htmlspecialchars($song['title']); ?>">
-
-                        <div class="play-overlay">
-                            <button class="play-btn" onclick="playSong(<?php echo $song['id']; ?>)">
-                                <i class="fas fa-play"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="song-info">
-                        <h3 class="song-title">
-                            <a href="player.php?id=<?php echo $song['id']; ?>"><?php echo htmlspecialchars($song['title']); ?></a>
-                        </h3>
-                        <p class="song-artist">
-                            <a href="artist.php?id=<?php echo $song['artist_id']; ?>"><?php echo htmlspecialchars($song['artist_name']); ?></a>
-                        </p>
-                        <div class="song-stats">
-                            <span><i class="fas fa-play-circle"></i> <?php echo number_format($song['play_count']); ?></span>
-
-                            <button class="btn-favorite" onclick="toggleFavorite(<?php echo $song['id']; ?>)">
-                                <?php 
-                                    // Kiểm tra xem bài hát này có trong danh sách đã like không
-                                    $is_liked = in_array($song['id'], $liked_songs); 
-                                ?>
-                                <i class="<?php echo $is_liked ? 'fas' : 'far'; ?> fa-heart" 
-                                style="<?php echo $is_liked ? 'color: red;' : ''; ?>"></i>
-                            </button>
-
-                        </div>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
+        <div class="card-body">
+            <canvas id="usersChart"></canvas>
         </div>
     </div>
-</section>
+</div>
 
-<!-- New Releases -->
-<section class="section bg-light">
-    <div class="container">
-        <div class="section-header">
-            <h2><i class="fas fa-compact-disc"></i> Mới phát hành</h2>
-            <a href="search.php?filter=new" class="see-all">Xem tất cả <i class="fas fa-arrow-right"></i></a>
+<!-- Top Lists -->
+<div class="top-lists-grid">
+    <div class="top-list-card">
+        <div class="card-header">
+            <h3><i class="fas fa-trophy"></i> Top 10 Bài Hát</h3>
+            <a href="songs.php" class="btn-link">Xem tất cả <i class="fas fa-arrow-right"></i></a>
         </div>
-        
-        <div class="songs-list">
-            <?php if(empty($new_releases)): ?>
-                <p class="text-muted">Chưa có bài hát mới.</p>
-            <?php else: ?>
-                <?php foreach(array_slice($new_releases, 0, 8) as $index => $song): ?>
-                <div class="song-row" data-song-id="<?php echo $song['id']; ?>">
-                    <div class="song-number"><?php echo $index + 1; ?></div>
-                    <div class="song-thumbnail">
-                        <img src="<?php 
-                        echo !empty($song['image_url']) 
-                            ? BASE_URL . $song['image_url'] 
-                            : BASE_URL . '/assets/images/default-cover.jpg';
-                        ?>" 
-                        alt="<?php echo htmlspecialchars($song['title']); ?>">
-
-                        <button class="play-btn-small" onclick="playSong(<?php echo $song['id']; ?>)">
-                            <i class="fas fa-play"></i>
-                        </button>
-                    </div>
-                    <div class="song-details">
-                        <h4><?php echo htmlspecialchars($song['title']); ?></h4>
-                        <p><?php echo htmlspecialchars($song['artist_name']); ?></p>
-                    </div>
-                    <div class="song-duration"><?php echo $song['duration']; ?></div>
-                    
-                    <div class="song-actions">
-                        <button onclick="addToPlaylist(<?php echo $song['id']; ?>)" title="Thêm vào playlist">
-                            <i class="fas fa-plus"></i>
-                        </button>
-                        
-                        <button onclick="toggleFavorite(<?php echo $song['id']; ?>)" title="Yêu thích">
-                            <?php $is_liked = in_array($song['id'], $liked_songs); ?>
-                            
-                            <i class="<?php echo $is_liked ? 'fas' : 'far'; ?> fa-heart" 
-                            style="<?php echo $is_liked ? 'color: red;' : ''; ?>"></i>
-                        </button>
-                    </div>
-
-
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </div>
-</section>
-
-<!-- Popular Artists -->
-<section class="section">
-    <div class="container">
-        <div class="section-header">
-            <h2><i class="fas fa-star"></i> Nghệ sĩ nổi bật</h2>
-            <a href="artists.php" class="see-all">Xem tất cả <i class="fas fa-arrow-right"></i></a>
-        </div>
-        
-        <div class="artists-grid">
-            <?php if(empty($popular_artists)): ?>
-                <p class="text-muted">Chưa có nghệ sĩ nào.</p>
-            <?php else: ?>
-                <?php foreach($popular_artists as $artist): ?>
-                <div class="artist-card">
-                    <a href="artist.php?id=<?php echo $artist['id']; ?>">
-                        <div class="artist-image">
-                             <img src="<?php 
-                                    echo !empty($artist['avatar']) 
-                                        ? BASE_URL . $artist['avatar'] 
-                                        : BASE_URL . '/assets/images/default-artist.jpg';
-                                ?>" 
-                                 alt="<?php echo htmlspecialchars($artist['name']); ?>">
+        <div class="card-body">
+            <div class="top-list">
+                <?php if(empty($top_songs)): ?>
+                    <p style="padding: 20px; color: #a0a0a0; text-align: center;">Chưa có dữ liệu</p>
+                <?php else: ?>
+                    <?php foreach($top_songs as $index => $song): ?>
+                    <div class="top-item">
+                        <div class="top-rank <?php echo $index < 3 ? 'rank-top' : ''; ?>">
+                            <?php echo $index + 1; ?>
                         </div>
-                        <div class="artist-name">
-                            <h3><?php echo htmlspecialchars($artist['name']); ?></h3>
-                            <p><?php echo htmlspecialchars($artist['country']); ?></p>
+                        <div class="top-info">
+                            <h4><?php echo htmlspecialchars($song['title']); ?></h4>
+                            <p><?php echo htmlspecialchars($song['artist_name'] ?? 'Unknown'); ?></p>
                         </div>
-                    </a>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </div>
-</section>
-
-<!-- Album Hot -->
-<section class="section bg-light">
-    <div class="container">
-        <div class="section-header">
-            <h2><i class="fas fa-compact-disc"></i> Album Hot</h2>
-            <a href="albums.php" class="see-all">Xem tất cả <i class="fas fa-arrow-right"></i></a>
-        </div>
-        
-        <?php if(empty($latest_albums)): ?>
-            <p class="text-muted">Chưa có album nào.</p>
-        <?php else: ?>
-
-
-            <div class="songs-grid">
-                <?php foreach($latest_albums as $album): 
-                    $album_img = !empty($album['cover_url']) 
-                        ? BASE_URL . $album['cover_url'] 
-                        : BASE_URL . '/assets/images/default-cover.jpg';
-                    
-                    // Tạo link sẵn
-                    $album_link = "album.php?id=" . $album['id'];
-                ?>
-                
-                <div class="song-card">
-                    <div class="song-image">
-                        <img src="<?php echo $album_img; ?>" alt="<?php echo htmlspecialchars($album['title']); ?>">
-                        
-                        <a href="<?php echo $album_link; ?>" class="play-overlay" style="display: flex; align-items: center; justify-content: center; text-decoration: none;">
-                            <span class="play-btn" style="display:flex; align-items:center; justify-content:center; pointer-events: none;">
-                                <i class="fas fa-play"></i>
-                            </span>
-                        </a>
+                        <div class="top-plays">
+                            <i class="fas fa-play-circle"></i>
+                            <?php echo number_format($song['play_count']); ?>
+                        </div>
                     </div>
-                    
-                    <div class="song-info">
-                        <h3 class="song-title">
-                            <a href="<?php echo $album_link; ?>">
-                                <?php echo htmlspecialchars($album['title']); ?>
-                            </a>
-                        </h3>
-                        <p class="song-artist">
-                            <?php echo htmlspecialchars($album['artist_name']); ?>
-                        </p>
-                    </div>
-                </div>
-
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
+                <?php endif; ?>
             </div>
-
-
-        <?php endif; ?>
-    </div>
-</section>
-
-
-
-<!-- Call to Action -->
-<?php if(!isLoggedIn()): ?>
-<section class="cta-section">
-    <div class="container">
-        <div class="cta-content">
-            <h2>Sẵn sàng bắt đầu?</h2>
-            <p>Tham gia cộng đồng âm nhạc lớn nhất Việt Nam ngay hôm nay</p>
-            <a href="register.php" class="btn btn-white btn-large">Đăng ký miễn phí</a>
         </div>
     </div>
-</section>
-<?php endif; ?>
+
+    <div class="top-list-card">
+        <div class="card-header">
+            <h3><i class="fas fa-star"></i> Nghệ Sĩ Được Yêu Thích</h3>
+            <a href="artists.php" class="btn-link">Xem tất cả <i class="fas fa-arrow-right"></i></a>
+        </div>
+        <div class="card-body">
+            <div class="top-artists-list">
+                <?php if(empty($top_artists)): ?>
+                    <p style="padding: 20px; color: #a0a0a0; text-align: center;">Chưa có dữ liệu</p>
+                <?php else: ?>
+                    <?php foreach($top_artists as $artist): ?>
+                    <div class="artist-item">
+                        <img src="<?php echo !empty($artist['avatar']) ? BASE_URL . $artist['avatar'] : BASE_URL . '/assets/images/default-artist.jpg'; ?>" 
+                             alt="<?php echo htmlspecialchars($artist['name']); ?>">
+                        <div class="artist-info">
+                            <h4><?php echo htmlspecialchars($artist['name']); ?></h4>
+                            <p><i class="fas fa-heart"></i> <?php echo number_format($artist['fans']); ?> fans</p>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="activity-card">
+    <div class="card-header">
+        <h3><i class="fas fa-clock"></i> Hoạt động gần đây</h3>
+    </div>
+    <div class="card-body">
+        <div class="activity-list">
+            <?php if(empty($recent_activities)): ?>
+                <p style="padding: 20px; color: #a0a0a0; text-align: center;">Chưa có hoạt động</p>
+            <?php else: ?>
+                <?php foreach($recent_activities as $activity): ?>
+                <div class="activity-item">
+                    <div class="activity-icon <?php echo $activity['type'] == 'song' ? 'new' : 'user'; ?>">
+                        <i class="fas fa-<?php echo $activity['type'] == 'song' ? 'music' : 'user-plus'; ?>"></i>
+                    </div>
+                    <div class="activity-content">
+                        <p>
+                            <strong><?php echo $activity['type'] == 'song' ? 'Bài hát mới' : 'Người dùng mới'; ?></strong> 
+                            <?php echo $activity['type'] == 'song' ? 'được thêm' : 'đăng ký'; ?>: 
+                            "<?php echo htmlspecialchars($activity['name']); ?>"
+                        </p>
+                        <span class="activity-time">
+                            <?php 
+                            $time_diff = time() - strtotime($activity['time']);
+                            if($time_diff < 3600) {
+                                echo floor($time_diff / 60) . ' phút trước';
+                            } elseif($time_diff < 86400) {
+                                echo floor($time_diff / 3600) . ' giờ trước';
+                            } else {
+                                echo floor($time_diff / 86400) . ' ngày trước';
+                            }
+                            ?>
+                        </span>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+// Plays Chart
+const playsData = <?php echo json_encode($plays_by_day); ?>;
+const playsCtx = document.getElementById('playsChart').getContext('2d');
+new Chart(playsCtx, {
+    type: 'line',
+    data: {
+        labels: playsData.map(d => d.date),
+        datasets: [{
+            label: 'Lượt nghe',
+            data: playsData.map(d => d.plays),
+            borderColor: '#1db954',
+            backgroundColor: 'rgba(29, 185, 84, 0.1)',
+            tension: 0.4,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            y: { 
+                beginAtZero: true,
+                ticks: { color: '#a0a0a0' },
+                grid: { color: '#2a2a2a' }
+            },
+            x: {
+                ticks: { color: '#a0a0a0' },
+                grid: { color: '#2a2a2a' }
+            }
+        }
+    }
+});
+
+// Users Chart
+const usersData = <?php echo json_encode($new_users); ?>;
+const usersCtx = document.getElementById('usersChart').getContext('2d');
+new Chart(usersCtx, {
+    type: 'bar',
+    data: {
+        labels: usersData.map(d => d.date),
+        datasets: [{
+            label: 'Người dùng mới',
+            data: usersData.map(d => d.users),
+            backgroundColor: '#1db954',
+            borderRadius: 6
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            y: { 
+                beginAtZero: true,
+                ticks: { color: '#a0a0a0' },
+                grid: { color: '#2a2a2a' }
+            },
+            x: {
+                ticks: { color: '#a0a0a0' },
+                grid: { display: false }
+            }
+        }
+    }
+});
+
+// Filter buttons functionality
+document.querySelectorAll('.btn-filter').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        // TODO: Implement filter logic
+        console.log('Filter by:', this.dataset.period);
+    });
+});
+</script>
 
 <?php require_once 'includes/footer.php'; ?>
